@@ -9,12 +9,15 @@
 
 #define BTN_MUTE_PIN        6       /* GPIO 6 */
 #define BTN_PLAY_PIN        5       /* GPIO 5 */
-#define BTN_NEXT_PIN        4       /* GPIO 4 */
+#define BTN_TRACK_PIN       4       /* GPIO 4 */
 
 #define HID_KEY_NONE        0x00
 #define HID_KEY_MUTE        (1 << 2)/* Bit 2: Mute (0x04) */
 #define HID_KEY_PLAY_PAUSE  (1 << 3)/* Bit 3: Play/Pause (0x08) */
 #define HID_KEY_NEXT_TRACK  (1 << 4)/* Bit 4: Next Track (0x10) */
+#define HID_KEY_PREV_TRACK  (1 << 5)/* Bit 5: Previous Track (0x20) */
+
+#define HOLD_THRESHOLD_MS   800     /* 0.8s hold for Previous Track */
 
 static struct bt_conn *current_conn = NULL;
 
@@ -226,7 +229,7 @@ static const struct device *gpio_dev;
 int main(void)
 {
     k_msleep(500);
-    printk("\n=== Desk Controller (Mute + Play/Pause + Next Track) ===\n");
+    printk("\n=== Desk Controller (Mute + Play/Pause + Track Control) ===\n");
 
     gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     if (!device_is_ready(gpio_dev)) {
@@ -234,10 +237,9 @@ int main(void)
         return 0;
     }
 
-    /* Configure GPIO 6 (Mute), GPIO 5 (Play/Pause), GPIO 4 (Next Track) */
     gpio_pin_configure(gpio_dev, BTN_MUTE_PIN, GPIO_INPUT | GPIO_PULL_UP);
     gpio_pin_configure(gpio_dev, BTN_PLAY_PIN, GPIO_INPUT | GPIO_PULL_UP);
-    gpio_pin_configure(gpio_dev, BTN_NEXT_PIN, GPIO_INPUT | GPIO_PULL_UP);
+    gpio_pin_configure(gpio_dev, BTN_TRACK_PIN, GPIO_INPUT | GPIO_PULL_UP);
 
     bt_conn_auth_cb_register(&auth_cb_display);
     bt_conn_auth_info_cb_register(&auth_info_cb);
@@ -263,39 +265,53 @@ int main(void)
 
     int btn_mute_last = 1;
     int btn_play_last = 1;
-    int btn_next_last = 1;
+    int btn_track_last = 1;
+
+    int64_t track_press_time = 0;
+    bool track_long_handled = false;
 
     while (1) {
         k_msleep(20);
 
         int mute_val = gpio_pin_get(gpio_dev, BTN_MUTE_PIN);
         int play_val = gpio_pin_get(gpio_dev, BTN_PLAY_PIN);
-        int next_val = gpio_pin_get(gpio_dev, BTN_NEXT_PIN);
+        int track_val = gpio_pin_get(gpio_dev, BTN_TRACK_PIN);
+        int64_t now = k_uptime_get();
 
-        /* Mute Button (GPIO 6) */
+        /* Mute (GPIO 6) */
         if (mute_val == 0 && btn_mute_last == 1) {
             printk("[BUTTON] GPIO 6 -> MUTE\n");
             send_consumer_key(HID_KEY_MUTE);
             k_msleep(150);
         }
 
-        /* Play/Pause Button (GPIO 5) */
+        /* Play/Pause (GPIO 5) */
         if (play_val == 0 && btn_play_last == 1) {
             printk("[BUTTON] GPIO 5 -> PLAY / PAUSE\n");
             send_consumer_key(HID_KEY_PLAY_PAUSE);
             k_msleep(150);
         }
 
-        /* Next Track Button (GPIO 4) */
-        if (next_val == 0 && btn_next_last == 1) {
-            printk("[BUTTON] GPIO 4 -> NEXT TRACK\n");
-            send_consumer_key(HID_KEY_NEXT_TRACK);
-            k_msleep(150);
+        /* Track Control (GPIO 4): Click = Next, Hold = Prev */
+        if (track_val == 0 && btn_track_last == 1) {
+            track_press_time = now;
+            track_long_handled = false;
+        } else if (track_val == 0 && btn_track_last == 0) {
+            if (!track_long_handled && (now - track_press_time) >= HOLD_THRESHOLD_MS) {
+                printk("[BUTTON] GPIO 4 (HOLD) -> PREVIOUS TRACK\n");
+                send_consumer_key(HID_KEY_PREV_TRACK);
+                track_long_handled = true;
+            }
+        } else if (track_val == 1 && btn_track_last == 0) {
+            if (!track_long_handled) {
+                printk("[BUTTON] GPIO 4 (CLICK) -> NEXT TRACK\n");
+                send_consumer_key(HID_KEY_NEXT_TRACK);
+            }
         }
 
         btn_mute_last = mute_val;
         btn_play_last = play_val;
-        btn_next_last = next_val;
+        btn_track_last = track_val;
     }
 
     return 0;
