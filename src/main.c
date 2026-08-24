@@ -8,12 +8,15 @@
 #include <zephyr/drivers/gpio.h>
 
 #define BTN_MUTE_PIN        6       /* GPIO 6 */
-#define HID_KEY_MUTE        (1 << 2)/* 0x04 */
+#define BTN_PLAY_PIN        5       /* GPIO 5 */
+
 #define HID_KEY_NONE        0x00
+#define HID_KEY_MUTE        (1 << 2)/* Bit 2: Mute (0x04) */
+#define HID_KEY_PLAY_PAUSE  (1 << 3)/* Bit 3: Play/Pause (0x08) */
 
 static struct bt_conn *current_conn = NULL;
 
-/* 1-Byte Consumer Control Report Descriptor */
+/* Consumer Control Report Descriptor */
 static const uint8_t hid_report_map[] = {
     0x05, 0x0C,       /* Usage Page (Consumer Devices) */
     0x09, 0x01,       /* Usage (Consumer Control) */
@@ -191,16 +194,14 @@ static struct bt_conn_auth_info_cb auth_info_cb = {
     .pairing_complete = pairing_complete,
 };
 
-/* Send 1-byte Mute press and release */
-static int send_mute(void)
+static int send_consumer_key(uint8_t key_mask)
 {
     if (!current_conn) {
-        printk("Not connected\n");
         return -ENOTCONN;
     }
 
     const struct bt_gatt_attr *report_attr = &hids_svc.attrs[10];
-    uint8_t report = HID_KEY_MUTE;
+    uint8_t report = key_mask;
     int err;
 
     /* Press */
@@ -223,14 +224,17 @@ static const struct device *gpio_dev;
 int main(void)
 {
     k_msleep(500);
-    printk("\n=== 1-Button Mute Firmware Ready ===\n");
+    printk("\n=== Desk Controller (Mute + Play/Pause) ===\n");
 
     gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     if (!device_is_ready(gpio_dev)) {
         printk("GPIO0 not ready\n");
         return 0;
     }
+
+    /* Configure GPIO 6 (Mute) & GPIO 5 (Play/Pause) */
     gpio_pin_configure(gpio_dev, BTN_MUTE_PIN, GPIO_INPUT | GPIO_PULL_UP);
+    gpio_pin_configure(gpio_dev, BTN_PLAY_PIN, GPIO_INPUT | GPIO_PULL_UP);
 
     bt_conn_auth_cb_register(&auth_cb_display);
     bt_conn_auth_info_cb_register(&auth_info_cb);
@@ -252,23 +256,33 @@ int main(void)
     }
 
     bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-    printk("Advertising as %s\n", CONFIG_BT_DEVICE_NAME);
+    printk("Ready and advertising...\n");
 
-    int btn_last = 1;
+    int btn_mute_last = 1;
+    int btn_play_last = 1;
 
     while (1) {
         k_msleep(20);
 
-        int btn_val = gpio_pin_get(gpio_dev, BTN_MUTE_PIN);
+        int mute_val = gpio_pin_get(gpio_dev, BTN_MUTE_PIN);
+        int play_val = gpio_pin_get(gpio_dev, BTN_PLAY_PIN);
 
-        /* Instant press detection */
-        if (btn_val == 0 && btn_last == 1) {
-            printk("[BUTTON] Pressed -> Sending Mute!\n");
-            send_mute();
-            k_msleep(150); /* Debounce */
+        /* Mute Button (GPIO 6) */
+        if (mute_val == 0 && btn_mute_last == 1) {
+            printk("[BUTTON] GPIO 6 -> MUTE\n");
+            send_consumer_key(HID_KEY_MUTE);
+            k_msleep(150);
         }
 
-        btn_last = btn_val;
+        /* Play/Pause Button (GPIO 5) */
+        if (play_val == 0 && btn_play_last == 1) {
+            printk("[BUTTON] GPIO 5 -> PLAY / PAUSE\n");
+            send_consumer_key(HID_KEY_PLAY_PAUSE);
+            k_msleep(150);
+        }
+
+        btn_mute_last = mute_val;
+        btn_play_last = play_val;
     }
 
     return 0;
