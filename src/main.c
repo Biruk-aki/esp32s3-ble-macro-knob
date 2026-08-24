@@ -18,47 +18,48 @@
 #define HID_KEY_PREV_TRACK    (1 << 5)  /* 0x20 */
 #define HID_KEY_STOP          (1 << 6)  /* 0x40 */
 
-/* Pin Definitions */
-#define BTN_MODE_PIN          4   /* GPIO 4: Mode Toggle */
-#define BTN_PLAY_PIN          5   /* GPIO 5: Play/Pause */
-#define BTN_MUTE_PIN          6   /* GPIO 6: Mute */
-#define POT_ADC_CHANNEL       0   /* ADC1_CH0 -> GPIO 1 */
+#define BTN_MODE_PIN          4   /* GPIO 4: Mode Switch (Volume <-> Track) */
+#define BTN_UP_PIN            5   /* GPIO 5: Vol Up / Next Track */
+#define BTN_DOWN_PIN          6   /* GPIO 6: Vol Down / Prev Track / Long Press Mute */
+#define POT_ADC_CHANNEL       0   /* ADC1_CH0 -> GPIO 1: Dedicated Scroll */
 
-/* Operating Modes */
-enum control_mode {
+#define LONG_PRESS_TIME_MS    3000 /* 3 seconds hold for Mute */
+#define SCROLL_THRESHOLD      200
+
+enum btn_mode {
     MODE_VOLUME = 0,
-    MODE_SCROLL,
     MODE_TRACK
 };
 
-static enum control_mode current_mode = MODE_VOLUME;
+static enum btn_mode current_mode = MODE_VOLUME;
 static bool is_connected = false;
+static bool notify_enabled = false;
 
-/* Combined HID Report Descriptor: Media Keys (ID 1) + Mouse Wheel (ID 2) */
+/* HID Descriptor: Media Keys (ID 1) + Mouse Wheel (ID 2) */
 static const uint8_t hid_report_map[] = {
-    /* --- Report ID 1: Consumer Control (Media Keys) --- */
+    /* --- Report ID 1: Consumer Control --- */
     0x05, 0x0C,       /* Usage Page (Consumer Devices) */
     0x09, 0x01,       /* Usage (Consumer Control) */
     0xA1, 0x01,       /* Collection (Application) */
     0x85, 0x01,       /*   Report ID (1) */
-    0x15, 0x00,       /*   Logical Minimum (0 = released) */
-    0x25, 0x01,       /*   Logical Maximum (1 = pressed) */
-    0x75, 0x01,       /*   Report Size (1 bit per button) */
-    0x95, 0x07,       /*   Report Count (7 functional buttons) */
-    0x09, 0xE9,       /*   Usage (Volume Increment) -> Bit 0 */
-    0x09, 0xEA,       /*   Usage (Volume Decrement) -> Bit 1 */
-    0x09, 0xE2,       /*   Usage (Mute)             -> Bit 2 */
-    0x09, 0xCD,       /*   Usage (Play/Pause)        -> Bit 3 */
-    0x09, 0xB5,       /*   Usage (Scan Next Track)  -> Bit 4 */
-    0x09, 0xB6,       /*   Usage (Scan Prev Track)  -> Bit 5 */
-    0x09, 0xB7,       /*   Usage (Stop)             -> Bit 6 */
+    0x15, 0x00,       /*   Logical Minimum (0) */
+    0x25, 0x01,       /*   Logical Maximum (1) */
+    0x75, 0x01,       /*   Report Size (1 bit) */
+    0x95, 0x07,       /*   Report Count (7 bits) */
+    0x09, 0xE9,       /*   Volume Up */
+    0x09, 0xEA,       /*   Volume Down */
+    0x09, 0xE2,       /*   Mute */
+    0x09, 0xCD,       /*   Play/Pause */
+    0x09, 0xB5,       /*   Scan Next Track */
+    0x09, 0xB6,       /*   Scan Prev Track */
+    0x09, 0xB7,       /*   Stop */
     0x81, 0x02,       /*   Input (Data, Variable, Absolute) */
     0x75, 0x01,       /*   Report Size (1 bit) */
     0x95, 0x01,       /*   Report Count (1 bit padding) */
-    0x81, 0x01,       /*   Input (Constant) -> Bit 7 padding */
+    0x81, 0x01,       /*   Input (Constant) */
     0xC0,             /* End Collection */
 
-    /* --- Report ID 2: Mouse Wheel (Vertical Scroll) --- */
+    /* --- Report ID 2: Mouse Wheel (Scroll) --- */
     0x05, 0x01,       /* Usage Page (Generic Desktop) */
     0x09, 0x02,       /* Usage (Mouse) */
     0xA1, 0x01,       /* Collection (Application) */
@@ -66,7 +67,7 @@ static const uint8_t hid_report_map[] = {
     0x09, 0x01,       /*   Usage (Pointer) */
     0xA1, 0x00,       /*   Collection (Physical) */
     0x05, 0x01,       /*     Usage Page (Generic Desktop) */
-    0x09, 0x38,       /*     Usage (Wheel / Vertical Scroll) */
+    0x09, 0x38,       /*     Usage (Wheel) */
     0x15, 0x81,       /*     Logical Minimum (-127) */
     0x25, 0x7F,       /*     Logical Maximum (127) */
     0x75, 0x08,       /*     Report Size (8 bits) */
@@ -76,40 +77,34 @@ static const uint8_t hid_report_map[] = {
     0xC0              /* End Collection (Application) */
 };
 
-/* HID Metadata */
 static const uint8_t hid_info[] = { 0x01, 0x01, 0x00, 0x02 };
 static uint8_t hid_protocol_mode = 0x01;
 static uint8_t hid_ctrl_point;
 static uint8_t hid_input_value[2];
-static const uint8_t hid_report_ref[] = { 0x01, 0x01 };
+static const uint8_t hid_report_ref[] = { 0x00, 0x01 };
 
-/* Read Callbacks */
 static ssize_t read_report_map(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                void *buf, uint16_t len, uint16_t offset)
 {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset,
-                             hid_report_map, sizeof(hid_report_map));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, hid_report_map, sizeof(hid_report_map));
 }
 
 static ssize_t read_hid_info(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                              void *buf, uint16_t len, uint16_t offset)
 {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset,
-                             hid_info, sizeof(hid_info));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, hid_info, sizeof(hid_info));
 }
 
 static ssize_t read_report_ref(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                void *buf, uint16_t len, uint16_t offset)
 {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset,
-                             hid_report_ref, sizeof(hid_report_ref));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, hid_report_ref, sizeof(hid_report_ref));
 }
 
 static ssize_t read_protocol_mode(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                   void *buf, uint16_t len, uint16_t offset)
 {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset,
-                             &hid_protocol_mode, sizeof(hid_protocol_mode));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &hid_protocol_mode, sizeof(hid_protocol_mode));
 }
 
 static ssize_t write_ctrl_point(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -123,27 +118,29 @@ static ssize_t write_ctrl_point(struct bt_conn *conn, const struct bt_gatt_attr 
     return len;
 }
 
-/* Advertising Data */
+static void hids_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    printk("HID Notifications %s\n", notify_enabled ? "ENABLED by PC" : "DISABLED");
+}
+
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
     BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_HIDS_VAL)),
 };
 
 static const struct bt_data sd[] = {
-    BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
-            sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+    BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
-/* Advertising Work Handler */
 static void adv_restart_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(adv_restart_work, adv_restart_handler);
 
 static void adv_restart_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
-    int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1,
-                              ad, ARRAY_SIZE(ad),
-                              sd, ARRAY_SIZE(sd));
+    int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
     if (err) {
         printk("Failed to restart advertising (err %d)\n", err);
     } else {
@@ -151,7 +148,6 @@ static void adv_restart_handler(struct k_work *work)
     }
 }
 
-/* Connection Callbacks */
 static void connected(struct bt_conn *conn, uint8_t err)
 {
     ARG_UNUSED(conn);
@@ -160,13 +156,14 @@ static void connected(struct bt_conn *conn, uint8_t err)
         return;
     }
     is_connected = true;
-    printk("Connected to host!\n");
+    printk(">>> CONNECTED TO PC! <<<\n");
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     ARG_UNUSED(conn);
     is_connected = false;
+    notify_enabled = false;
     printk("Disconnected (reason 0x%02x)\n", reason);
     k_work_reschedule(&adv_restart_work, K_MSEC(200));
 }
@@ -187,62 +184,49 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .security_changed = security_changed,
 };
 
-/* GATT Service Declaration */
 BT_GATT_SERVICE_DEFINE(hids_svc,
     BT_GATT_PRIMARY_SERVICE(BT_UUID_HIDS),
 
-    /* 1. Protocol Mode */
     BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_PROTOCOL_MODE,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            read_protocol_mode, NULL, &hid_protocol_mode),
 
-    /* 2. HID Info */
     BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_INFO,
                            BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ_ENCRYPT,
                            read_hid_info, NULL, NULL),
 
-    /* 3. HID Control Point */
     BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_CTRL_POINT,
                            BT_GATT_CHRC_WRITE_WITHOUT_RESP,
                            BT_GATT_PERM_WRITE_ENCRYPT,
                            NULL, write_ctrl_point, &hid_ctrl_point),
 
-    /* 4. Report Map */
     BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_REPORT_MAP,
                            BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ_ENCRYPT,
                            read_report_map, NULL, NULL),
 
-    /* 5. Input Report */
     BT_GATT_CHARACTERISTIC(BT_UUID_HIDS_REPORT,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ_ENCRYPT,
                            NULL, NULL, hid_input_value),
 
-    BT_GATT_CCC(NULL, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
+    BT_GATT_CCC(hids_ccc_cfg_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 
     BT_GATT_DESCRIPTOR(BT_UUID_HIDS_REPORT_REF,
                        BT_GATT_PERM_READ_ENCRYPT,
                        read_report_ref, NULL, NULL),
 );
 
-/* Pairing Callbacks */
 static void pairing_confirm(struct bt_conn *conn)
 {
-    int err = bt_conn_auth_pairing_confirm(conn);
-    if (err) {
-        printk("Pairing confirm failed (err %d)\n", err);
-    } else {
-        printk("Pairing confirmed\n");
-    }
+    bt_conn_auth_pairing_confirm(conn);
 }
 
 static void auth_cancel(struct bt_conn *conn)
 {
     ARG_UNUSED(conn);
-    printk("Pairing cancelled\n");
 }
 
 static struct bt_conn_auth_cb auth_cb_display = {
@@ -270,37 +254,34 @@ static struct bt_conn_auth_info_cb auth_info_cb = {
 /* Send HID Media Key (Report ID 1) */
 static int send_hid_key(uint8_t key_mask)
 {
-    if (!is_connected) {
+    if (!is_connected || !notify_enabled) {
         return -ENOTCONN;
     }
 
     const struct bt_gatt_attr *report_attr = &hids_svc.attrs[10];
-    uint8_t report[2] = { 0x01, key_mask }; /* [Report ID, Bitmask] */
+    uint8_t report[2] = { 0x01, key_mask };
     int err;
 
-    /* 1. Key Press */
     err = bt_gatt_notify(NULL, report_attr, report, sizeof(report));
     if (err) {
         return err;
     }
 
-    k_msleep(20);
+    k_msleep(25);
 
-    /* 2. Key Release */
     report[1] = HID_KEY_NONE;
-    err = bt_gatt_notify(NULL, report_attr, report, sizeof(report));
-    return err;
+    return bt_gatt_notify(NULL, report_attr, report, sizeof(report));
 }
 
-/* Send HID Vertical Scroll Step (Report ID 2) */
-static int send_hid_scroll(int8_t wheel_delta)
+/* Send HID Vertical Scroll (Report ID 2) */
+static int send_hid_scroll(int8_t scroll_step)
 {
-    if (!is_connected) {
+    if (!is_connected || !notify_enabled) {
         return -ENOTCONN;
     }
 
     const struct bt_gatt_attr *report_attr = &hids_svc.attrs[10];
-    uint8_t report[2] = { 0x02, (uint8_t)wheel_delta }; /* [Report ID, Delta] */
+    uint8_t report[2] = { 0x02, (uint8_t)scroll_step };
 
     return bt_gatt_notify(NULL, report_attr, report, sizeof(report));
 }
@@ -328,19 +309,15 @@ static int init_hardware(void)
 {
     gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     if (!device_is_ready(gpio_dev)) {
-        printk("GPIO device not ready\n");
         return -ENODEV;
     }
 
-    /* Configure Buttons with Internal Pull-Ups */
     gpio_pin_configure(gpio_dev, BTN_MODE_PIN, GPIO_INPUT | GPIO_PULL_UP);
-    gpio_pin_configure(gpio_dev, BTN_PLAY_PIN, GPIO_INPUT | GPIO_PULL_UP);
-    gpio_pin_configure(gpio_dev, BTN_MUTE_PIN, GPIO_INPUT | GPIO_PULL_UP);
+    gpio_pin_configure(gpio_dev, BTN_UP_PIN, GPIO_INPUT | GPIO_PULL_UP);
+    gpio_pin_configure(gpio_dev, BTN_DOWN_PIN, GPIO_INPUT | GPIO_PULL_UP);
 
-    /* Configure ADC */
     adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc0));
     if (!device_is_ready(adc_dev)) {
-        printk("ADC device not ready\n");
         return -ENODEV;
     }
 
@@ -352,15 +329,14 @@ int main(void)
 {
     int err;
 
-    printk("Starting BLE Desk Knob Firmware...\n");
+    k_msleep(500);
+    printk("\n=== Booting ESP32-S3 Scroll & Media Knob ===\n");
 
     init_hardware();
 
-    /* Register security callbacks */
     bt_conn_auth_cb_register(&auth_cb_display);
     bt_conn_auth_info_cb_register(&auth_info_cb);
 
-    /* Enable Bluetooth */
     err = bt_enable(NULL);
     if (err) {
         printk("Bluetooth init failed (err %d)\n", err);
@@ -373,93 +349,107 @@ int main(void)
         settings_load();
     }
 
-    /* Start Advertising */
-    err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1,
-                          ad, ARRAY_SIZE(ad),
-                          sd, ARRAY_SIZE(sd));
+    err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
     if (err) {
-        printk("Advertising failed to start (err %d)\n", err);
+        printk("Advertising failed (err %d)\n", err);
         return 0;
     }
     printk("Advertising started as %s\n", CONFIG_BT_DEVICE_NAME);
 
-    /* Polling Loop Variables */
-    int prev_pot_val = -1;
-    int btn_mode_last = 1, btn_play_last = 1, btn_mute_last = 1;
+    int filtered_pot = -1;
+    int anchor_pot = -1;
+    int64_t last_scroll_time = 0;
+
+    int btn_mode_last = 1, btn_up_last = 1, btn_down_last = 1;
+    int64_t btn_down_press_start = 0;
+    bool mute_triggered = false;
 
     while (1) {
-        k_msleep(30);
+        k_msleep(15);
 
-        if (!is_connected) {
+        if (!is_connected || !notify_enabled) {
             continue;
         }
 
-        /* 1. Read Button 1: Mode Toggle */
+        /* --- 1. Mode Button (GPIO 4) --- */
         int btn_mode_val = gpio_pin_get(gpio_dev, BTN_MODE_PIN);
         if (btn_mode_val == 0 && btn_mode_last == 1) {
-            if (current_mode == MODE_VOLUME) {
-                current_mode = MODE_SCROLL;
-                printk("Switched Mode to: SCROLL\n");
-            } else if (current_mode == MODE_SCROLL) {
-                current_mode = MODE_TRACK;
-                printk("Switched Mode to: TRACK\n");
-            } else {
-                current_mode = MODE_VOLUME;
-                printk("Switched Mode to: VOLUME\n");
-            }
+            current_mode = (current_mode == MODE_VOLUME) ? MODE_TRACK : MODE_VOLUME;
+            printk("\n>>> BUTTON MODE: %s <<<\n", current_mode == MODE_VOLUME ? "VOLUME [Up/Down]" : "TRACK [Next/Prev]");
+            k_msleep(50);
         }
         btn_mode_last = btn_mode_val;
 
-        /* 2. Read Button 2: Play/Pause */
-        int btn_play_val = gpio_pin_get(gpio_dev, BTN_PLAY_PIN);
-        if (btn_play_val == 0 && btn_play_last == 1) {
-            printk("Sending Play/Pause\n");
-            send_hid_key(HID_KEY_PLAY_PAUSE);
-        }
-        btn_play_last = btn_play_val;
-
-        /* 3. Read Button 3: Mute */
-        int btn_mute_val = gpio_pin_get(gpio_dev, BTN_MUTE_PIN);
-        if (btn_mute_val == 0 && btn_mute_last == 1) {
-            printk("Sending Mute\n");
-            send_hid_key(HID_KEY_MUTE);
-        }
-        btn_mute_last = btn_mute_val;
-
-        /* 4. Read ADC (Potentiometer) */
-        err = adc_read(adc_dev, &sequence);
-        if (err == 0) {
-            if (prev_pot_val == -1) {
-                prev_pot_val = adc_sample_buffer;
+        /* --- 2. Button UP (GPIO 5) -> Volume Up / Next Track --- */
+        int btn_up_val = gpio_pin_get(gpio_dev, BTN_UP_PIN);
+        if (btn_up_val == 0 && btn_up_last == 1) {
+            if (current_mode == MODE_VOLUME) {
+                printk("[ACTION] Volume Up\n");
+                send_hid_key(HID_KEY_VOL_UP);
+            } else {
+                printk("[ACTION] Next Track\n");
+                send_hid_key(HID_KEY_NEXT_TRACK);
             }
+            k_msleep(50);
+        }
+        btn_up_last = btn_up_val;
 
-            int diff = adc_sample_buffer - prev_pot_val;
-            int threshold = 120; /* Noise filter deadzone */
+        /* --- 3. Button DOWN (GPIO 6) -> Short: Vol Down/Prev Track | Long: Mute --- */
+        int btn_down_val = gpio_pin_get(gpio_dev, BTN_DOWN_PIN);
+        int64_t now = k_uptime_get();
 
-            if (diff > threshold) {
+        if (btn_down_val == 0 && btn_down_last == 1) {
+            /* Button just pressed down */
+            btn_down_press_start = now;
+            mute_triggered = false;
+        } else if (btn_down_val == 0 && btn_down_last == 0) {
+            /* Button being held down */
+            if (!mute_triggered && (now - btn_down_press_start) >= LONG_PRESS_TIME_MS) {
+                printk("\n>>> [ACTION] LONG PRESS (3s) -> TOGGLE MUTE <<<\n");
+                send_hid_key(HID_KEY_MUTE);
+                mute_triggered = true;
+            }
+        } else if (btn_down_val == 1 && btn_down_last == 0) {
+            /* Button released */
+            if (!mute_triggered) {
                 if (current_mode == MODE_VOLUME) {
-                    printk("Pot CW -> Volume Up\n");
-                    send_hid_key(HID_KEY_VOL_UP);
-                } else if (current_mode == MODE_SCROLL) {
-                    printk("Pot CW -> Scroll Up\n");
-                    send_hid_scroll(1);
-                } else {
-                    printk("Pot CW -> Next Track\n");
-                    send_hid_key(HID_KEY_NEXT_TRACK);
-                }
-                prev_pot_val = adc_sample_buffer;
-            } else if (diff < -threshold) {
-                if (current_mode == MODE_VOLUME) {
-                    printk("Pot CCW -> Volume Down\n");
+                    printk("[ACTION] Volume Down\n");
                     send_hid_key(HID_KEY_VOL_DOWN);
-                } else if (current_mode == MODE_SCROLL) {
-                    printk("Pot CCW -> Scroll Down\n");
-                    send_hid_scroll(-1);
                 } else {
-                    printk("Pot CCW -> Prev Track\n");
+                    printk("[ACTION] Prev Track\n");
                     send_hid_key(HID_KEY_PREV_TRACK);
                 }
-                prev_pot_val = adc_sample_buffer;
+            }
+            k_msleep(50);
+        }
+        btn_down_last = btn_down_val;
+
+        /* --- 4. Potentiometer (GPIO 1) -> Continuous Vertical Scrolling --- */
+        if (adc_dev && device_is_ready(adc_dev)) {
+            err = adc_read(adc_dev, &sequence);
+            if (err == 0) {
+                if (filtered_pot == -1) {
+                    filtered_pot = adc_sample_buffer;
+                    anchor_pot = adc_sample_buffer;
+                } else {
+                    filtered_pot = (filtered_pot * 8 + adc_sample_buffer * 2) / 10;
+                }
+
+                int diff = filtered_pot - anchor_pot;
+
+                if ((now - last_scroll_time) > 80) {
+                    if (diff > SCROLL_THRESHOLD) {
+                        printk("[SCROLL] Up\n");
+                        send_hid_scroll(1);
+                        anchor_pot = filtered_pot;
+                        last_scroll_time = now;
+                    } else if (diff < -SCROLL_THRESHOLD) {
+                        printk("[SCROLL] Down\n");
+                        send_hid_scroll(-1);
+                        anchor_pot = filtered_pot;
+                        last_scroll_time = now;
+                    }
+                }
             }
         }
     }
