@@ -9,10 +9,12 @@
 
 #define BTN_MUTE_PIN        6       /* GPIO 6 */
 #define BTN_PLAY_PIN        5       /* GPIO 5 */
+#define BTN_NEXT_PIN        4       /* GPIO 4 */
 
 #define HID_KEY_NONE        0x00
 #define HID_KEY_MUTE        (1 << 2)/* Bit 2: Mute (0x04) */
 #define HID_KEY_PLAY_PAUSE  (1 << 3)/* Bit 3: Play/Pause (0x08) */
+#define HID_KEY_NEXT_TRACK  (1 << 4)/* Bit 4: Next Track (0x10) */
 
 static struct bt_conn *current_conn = NULL;
 
@@ -224,7 +226,7 @@ static const struct device *gpio_dev;
 int main(void)
 {
     k_msleep(500);
-    printk("\n=== Desk Controller (Mute + Play/Pause) ===\n");
+    printk("\n=== Desk Controller (Mute + Play/Pause + Next Track) ===\n");
 
     gpio_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
     if (!device_is_ready(gpio_dev)) {
@@ -232,9 +234,10 @@ int main(void)
         return 0;
     }
 
-    /* Configure GPIO 6 (Mute) & GPIO 5 (Play/Pause) */
+    /* Configure GPIO 6 (Mute), GPIO 5 (Play/Pause), GPIO 4 (Next Track) */
     gpio_pin_configure(gpio_dev, BTN_MUTE_PIN, GPIO_INPUT | GPIO_PULL_UP);
     gpio_pin_configure(gpio_dev, BTN_PLAY_PIN, GPIO_INPUT | GPIO_PULL_UP);
+    gpio_pin_configure(gpio_dev, BTN_NEXT_PIN, GPIO_INPUT | GPIO_PULL_UP);
 
     bt_conn_auth_cb_register(&auth_cb_display);
     bt_conn_auth_info_cb_register(&auth_info_cb);
@@ -260,12 +263,14 @@ int main(void)
 
     int btn_mute_last = 1;
     int btn_play_last = 1;
+    int btn_next_last = 1;
 
     while (1) {
         k_msleep(20);
 
         int mute_val = gpio_pin_get(gpio_dev, BTN_MUTE_PIN);
         int play_val = gpio_pin_get(gpio_dev, BTN_PLAY_PIN);
+        int next_val = gpio_pin_get(gpio_dev, BTN_NEXT_PIN);
 
         /* Mute Button (GPIO 6) */
         if (mute_val == 0 && btn_mute_last == 1) {
@@ -281,8 +286,16 @@ int main(void)
             k_msleep(150);
         }
 
+        /* Next Track Button (GPIO 4) */
+        if (next_val == 0 && btn_next_last == 1) {
+            printk("[BUTTON] GPIO 4 -> NEXT TRACK\n");
+            send_consumer_key(HID_KEY_NEXT_TRACK);
+            k_msleep(150);
+        }
+
         btn_mute_last = mute_val;
         btn_play_last = play_val;
+        btn_next_last = next_val;
     }
 
     return 0;
