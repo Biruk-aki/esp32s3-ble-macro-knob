@@ -3,92 +3,99 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
 
-#define WS2812_PIN 16  /* GPIO 48 = Port 1, Pin 16 (32 + 16 = 48) */
+#define STATUS_LED_PIN      10       /* GPIO 10: Standard Breadboard LED */
 
-static const struct device *gpio1_dev;
+static const struct device *gpio0_dev;
+static controller_mode_t active_mode = MODE_MEDIA;
+static int blink_step = 0;
 
-/* Cycle delay using Xtensa CCOUNT register (ESP32-S3 running at 240MHz: 1us = 240 cycles) */
-static inline void delay_cycles(uint32_t cycles)
+static void led_worker_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(led_work, led_worker_handler);
+
+static void led_set_state(int state)
 {
-    uint32_t start;
-    __asm__ volatile("rsr.ccount %0" : "=a"(start));
-    while (1) {
-        uint32_t current;
-        __asm__ volatile("rsr.ccount %0" : "=a"(current));
-        if ((current - start) >= cycles) {
-            break;
-        }
+    if (device_is_ready(gpio0_dev)) {
+        gpio_pin_set(gpio0_dev, STATUS_LED_PIN, state);
     }
 }
 
-/* Transmit 24-bit GRB to WS2812 */
-static void ws2812_send_color(uint8_t r, uint8_t g, uint8_t b)
+static void led_worker_handler(struct k_work *work)
 {
-    uint32_t grb = ((uint32_t)g << 16) | ((uint32_t)r << 8) | (uint32_t)b;
+    int next_delay_ms = 100;
 
-    unsigned int key = irq_lock();
+    switch (active_mode) {
+    case MODE_MEDIA:
+        /* Mode 1: Solid ON */
+        led_set_state(1);
+        next_delay_ms = 500;
+        break;
 
-    for (int i = 23; i >= 0; i--) {
-        if (grb & (1 << i)) {
-            /* Bit 1: High for ~800ns (190 cycles), Low for ~450ns (100 cycles) */
-            gpio_pin_set(gpio1_dev, WS2812_PIN, 1);
-            delay_cycles(190);
-            gpio_pin_set(gpio1_dev, WS2812_PIN, 0);
-            delay_cycles(100);
+    case MODE_NAVIGATION:
+        /* Mode 2: Blink twice (Flash -> Flash -> Pause) */
+        if (blink_step == 0) {
+            led_set_state(1);
+            next_delay_ms = 120;
+            blink_step++;
+        } else if (blink_step == 1) {
+            led_set_state(0);
+            next_delay_ms = 120;
+            blink_step++;
+        } else if (blink_step == 2) {
+            led_set_state(1);
+            next_delay_ms = 120;
+            blink_step++;
         } else {
-            /* Bit 0: High for ~350ns (80 cycles), Low for ~900ns (210 cycles) */
-            gpio_pin_set(gpio1_dev, WS2812_PIN, 1);
-            delay_cycles(80);
-            gpio_pin_set(gpio1_dev, WS2812_PIN, 0);
-            delay_cycles(210);
+            led_set_state(0);
+            next_delay_ms = 1000;
+            blink_step = 0;
         }
+        break;
+
+    case MODE_SYSTEM:
+        /* Mode 3: Blink three times (Flash -> Flash -> Flash -> Pause) */
+        if (blink_step == 0 || blink_step == 2 || blink_step == 4) {
+            led_set_state(1);
+            next_delay_ms = 120;
+            blink_step++;
+        } else if (blink_step == 1 || blink_step == 3) {
+            led_set_state(0);
+            next_delay_ms = 120;
+            blink_step++;
+        } else {
+            led_set_state(0);
+            next_delay_ms = 1000;
+            blink_step = 0;
+        }
+        break;
+
+    default:
+        led_set_state(0);
+        next_delay_ms = 1000;
+        break;
     }
 
-    irq_unlock(key);
-
-    /* Latch / Reset pulse (>50us) */
-    k_busy_wait(60);
+    k_work_reschedule(&led_work, K_MSEC(next_delay_ms));
 }
 
 int status_led_init(void)
 {
-    gpio1_dev = DEVICE_DT_GET(DT_NODELABEL(gpio1));
-    if (!device_is_ready(gpio1_dev)) {
-        printk("GPIO1 device not ready for WS2812\n");
+    gpio0_dev = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+    if (!device_is_ready(gpio0_dev)) {
+        printk("GPIO0 device not ready\n");
         return -ENODEV;
     }
 
-    gpio_pin_configure(gpio1_dev, WS2812_PIN, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure(gpio0_dev, STATUS_LED_PIN, GPIO_OUTPUT_INACTIVE);
 
-    printk("WS2812 Bitbang LED initialized on GPIO 48\n");
+    printk("Discrete Status LED Initialized on GPIO 10\n");
     status_led_set_mode(MODE_MEDIA);
     return 0;
 }
 
 void status_led_set_mode(controller_mode_t mode)
 {
-    if (!device_is_ready(gpio1_dev)) {
-        return;
-    }
+    active_mode = mode;
+    blink_step = 0;
 
-    switch (mode) {
-    case MODE_MEDIA:
-        /* Mode 1: Blue (R=0, G=0, B=30) */
-        ws2812_send_color(0, 0, 30);
-        break;
-
-    case MODE_NAVIGATION:
-        /* Mode 2: Green (R=0, G=30, B=0) */
-        ws2812_send_color(0, 30, 0);
-        break;
-
-    case MODE_SYSTEM:
-        /* Mode 3: Magenta (R=30, G=0, B=30) */
-        ws2812_send_color(30, 0, 30);
-        break;
-
-    default:
-        ws2812_send_color(0, 0, 0);
-        break;
-    }
+    k_work_reschedule(&led_work, K_NO_WAIT);
 }
