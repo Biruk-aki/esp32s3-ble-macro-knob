@@ -1,83 +1,61 @@
-Markdown
-# BLE Multi-Mode Desk Controller (HOGP Macro Knob)
+Markdown# BLE Multi-Mode Desk Controller (ESP32-S3 HOGP Macro Knob)
 
-A wireless, driverless desktop macro controller built on the **ESP32-S3** using **Zephyr RTOS**. The device interfaces natively with host operating systems (Windows, macOS, Linux) over **Bluetooth Low Energy (BLE) HID over GATT Profile (HOGP)** to provide tactile volume control, document scrolling, and media management.
+A wireless, driverless desktop macro controller built on the **ESP32-S3** using **Zephyr RTOS**. The device interfaces natively with host operating systems (Windows, macOS, Linux) over **Bluetooth Low Energy (BLE) HID over GATT Profile (HOGP)** to provide physical volume adjustments, document scrolling, display brightness control, and media management without requiring host-side companion software.
 
 ---
 
 ## Features
 
-- **Native BLE HID Integration:** Functions as a plug-and-play Human Interface Device (Consumer Control & Mouse/Keyboard profiles) without requiring host-side companion software or custom drivers.
-- **Continuous Rotary Control:** Maps analog potentiometer rotation via hardware ADC to continuous system inputs (Volume Up/Down, Page Scrolling, Brightness/Scrubbing).
-- **Multi-Mode State Machine:** Cycle between active operational modes using a single push button, with visual state feedback via an RGB/status LED.
-- **Software Signal Conditioning:** Implements Exponential Moving Average (EMA) filtering and dynamic deadbanding to eliminate analog wiper jitter and prevent phantom inputs.
-- **Isolated Power Architecture:** Powered via standard 5V USB-C while running all telemetry and control over a 2.4 GHz BLE wireless link.
+- **Composite BLE HID Profile (HOGP):** Integrates both **Consumer Control** and **Mouse Wheel** report descriptors over a single GATT service, allowing driverless plug-and-play operation.
+- **Continuous Rotary Analog Control:** Samples a 10kΩ potentiometer using hardware ADC with 12 dB attenuation (`ADC_GAIN_1_4`) to map full 0–3.3V rotations linearly to relative input steps.
+- **Signal Conditioning Pipeline:** Implements an Exponential Moving Average (EMA) filter combined with dynamic deadband thresholding to eliminate wiper noise, high-frequency bounce, and phantom inputs.
+- **3-Mode Finite State Machine:** Cycles through operational modes using a tactile switch, accompanied by an asynchronous, work-queue-driven LED blink engine.
+- **Non-Blocking RTOS Architecture:** Decoupled driver architecture separating the HID GATT server, ADC sampling loop, GPIO button state engine, and delayed work queues.
 
 ---
 
-## Control Modes
+## Control Modes & Mappings
 
-| Mode | LED Indicator | Rotate Clockwise ($\circlearrowright$) | Rotate Counter-Clockwise ($\circlearrowleft$) | Short Button Press |
-| :--- | :--- | :--- | :--- | :--- |
-| **Mode 1: Audio / Media** | Blue | Volume Up | Volume Down | Play / Pause |
-| **Mode 2: Navigation** | Green | Scroll Down | Scroll Up | Mode Switch |
-| **Mode 3: System / Custom** | Magenta | Brightness / Scrub Up | Brightness / Scrub Down | Mute Audio |
+| Mode | LED Indicator Pattern | Rotate Clockwise ($\circlearrowright$) | Rotate Counter-Clockwise ($\circlearrowleft$) | Button 2 (GPIO 5) | Button 3 (GPIO 4) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Mode 1: Audio / Media** | Solid ON | Volume Up (`0xE9`) | Volume Down (`0xEA`) | Play / Pause | **Click:** Next Track<br>**Hold:** Prev Track |
+| **Mode 2: Navigation** | 2 Short Blinks | Scroll Down ($\Delta\text{Wheel} = -1$) | Scroll Up ($\Delta\text{Wheel} = +1$) | Play / Pause | Mute Audio (`0xE2`) |
+| **Mode 3: System / Display** | 3 Short Blinks | Brightness Up (`0x6F`) | Brightness Down (`0x70`) | Play / Pause | Mute Audio (`0xE2`) |
 
----
-
-## Hardware Architecture
-
-- **Microcontroller:** ESP32-S3 DevKit (Tensilica Xtensa Dual-Core 32-bit LX7)
-- **Rotary Input:** 10kΩ Linear Potentiometer (Wiper $\rightarrow$ ADC1 Channel)
-- **Mode Selection:** Momentary Tactile Push Button (Interrupt-driven with internal pull-up)
-- **Status Display:** On-board / External RGB LED (GPIO/PWM controlled)
-- **Power:** 5V via USB-C (Regulated to 3.3V via on-board LDO)
+*Note: **Button 1 (GPIO 6)** cycles through modes sequentially: Mode 1 $\rightarrow$ Mode 2 $\rightarrow$ Mode 3 $\rightarrow$ Mode 1.*
 
 ---
 
-## Firmware Architecture & Tech Stack
+## Hardware Architecture & Pinout
 
-- **RTOS:** Zephyr RTOS
-- **Language:** C (C99 / C11)
-- **BLE Services:** 
-  - Human Interface Device Service (HIDS - `0x1812`)
-  - Battery Service (BAS - `0x180F`)
-  - Device Information Service (DIS - `0x180A`)
-- **Key Zephyr Subsystems:** `CONFIG_BT_HIDS`, `CONFIG_ADC`, `CONFIG_GPIO`, Zephyr Work Queues, Devicetree hardware overlays (`app.overlay`).
+- **Microcontroller:** ESP32-S3 DevKitC-1 (Xtensa Dual-Core 32-bit LX7 @ 240 MHz)
+- **Power Supply:** 5V via USB-C (Regulated to 3.3V via on-board LDO)
+
+| Peripheral | Component | ESP32-S3 Pin | Configuration / Notes |
+| :--- | :--- | :--- | :--- |
+| **Knob Wiper** | 10kΩ Linear Potentiometer | `GPIO 7` | ADC1 Channel 6, 12 dB Gain, Internal Ref |
+| **Button 1** | Tactile Switch (Mode Cycle) | `GPIO 6` | Input with Internal Pull-Up |
+| **Button 2** | Tactile Switch (Play/Pause) | `GPIO 5` | Input with Internal Pull-Up |
+| **Button 3** | Tactile Switch (Action/Mute) | `GPIO 4` | Input with Internal Pull-Up, Long-Press Timer |
+| **Status LED** | Discrete LED + Resistor | `GPIO 10` | Active High, Asynchronous Work Queue |
 
 ---
 
-## Project Structure
+## Firmware Architecture
 
 ```text
-├── app.overlay          # Devicetree pin configurations (ADC, GPIO, LED)
-├── prj.conf             # Zephyr Kconfig dependencies & BLE stack configuration
-├── CMakeLists.txt       # Build system definition
-├── src/
-│   ├── main.c           # Main initialization & RTOS thread coordinator
-│   ├── ble_hid.c        # BLE advertising, GATT server, and HOGP reports
-│   ├── ble_hid.h        # HID report descriptors and connection callbacks
-│   ├── adc_knob.c       # ADC sampling loop, moving average filter & delta detection
-│   ├── adc_knob.h       # ADC driver prototypes
-│   ├── button_mode.c    # GPIO interrupt handler, debouncing & state machine
-│   └── button_mode.h    # Mode enum and event dispatchers
-└── README.md
-Getting Started
-Prerequisites
-Zephyr SDK & West Toolchain
-
-ESP-IDF / Xtensa toolchain for ESP32-S3
-
-Build & Flash
-Bash
-# 1. Initialize and configure the workspace
-west init -l .
-west update
-
-# 2. Build for ESP32-S3
-west build -b esp32s3_devkitm app
-
-# 3. Flash to the board
-west flash
-Author
-Biruk Ambaye (GitHub | Portfolio)
+.
+├── app.overlay           # Devicetree overlays (ADC channel 6 on GPIO 7)
+├── prj.conf              # Kconfig: BLE stack, HOGP, NVS bonding, ADC, GPIO
+├── CMakeLists.txt        # Build system sources
+└── src/
+    ├── main.c            # RTOS coordinator & event dispatch loop
+    ├── ble_hid.c / .h    # Composite GATT server (Consumer Control + Mouse HID)
+    ├── adc_knob.c / .h   # ADC sampling, EMA filter & delta step detection
+    ├── button_mode.c / .h# State machine, button debouncing & long-press timer
+    └── status_led.c / .h # Asynchronous work-queue LED blink engine
+Signal Smoothing & Step LogicTo suppress potentiometer wiper jitter without adding latency, raw samples are conditioned via a first-order EMA filter:$$EMA_t = \frac{\text{Raw} + 3 \times EMA_{t-1}}{4}$$Delta tracking enforces a minimum threshold before generating HID packets:$$|\Delta V| = |EMA_t - V_{\text{last\_sent}}| \ge \text{THRESHOLD}$$Getting StartedPrerequisitesZephyr SDK (v0.17.x+)west Meta-toolESP32-S3 Toolchain (xtensa-espressif_esp32s3_zephyr-elf)Build & FlashClone repository:Bashgit clone [https://github.com/Biruk-aki/esp32s3-ble-macro-knob.git](https://github.com/Biruk-aki/esp32s3-ble-macro-knob.git)
+cd esp32s3-ble-macro-knob
+Perform a pristine build:Bashwest build -p always -b esp32s3_devkitc/esp32s3/procpu .
+Flash to ESP32-S3:Bashwest flash
+Pair with Host:Open host Bluetooth settings and pair with ESP32-DeskKnob.The device will establish BLE Security Level 2 bonding and register natively as a composite input device.AuthorBiruk AmbayeGitHub: @Biruk-aki
