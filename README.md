@@ -54,8 +54,20 @@ A wireless, driverless desktop macro controller built on the **ESP32-S3** using 
     ├── adc_knob.c / .h   # ADC sampling, EMA filter & delta step detection
     ├── button_mode.c / .h# State machine, button debouncing & long-press timer
     └── status_led.c / .h # Asynchronous work-queue LED blink engine
-Signal Smoothing & Step LogicTo suppress potentiometer wiper jitter without adding latency, raw samples are conditioned via a first-order EMA filter:$$EMA_t = \frac{\text{Raw} + 3 \times EMA_{t-1}}{4}$$Delta tracking enforces a minimum threshold before generating HID packets:$$|\Delta V| = |EMA_t - V_{\text{last\_sent}}| \ge \text{THRESHOLD}$$Getting StartedPrerequisitesZephyr SDK (v0.17.x+)west Meta-toolESP32-S3 Toolchain (xtensa-espressif_esp32s3_zephyr-elf)Build & FlashClone repository:Bashgit clone [https://github.com/Biruk-aki/esp32s3-ble-macro-knob.git](https://github.com/Biruk-aki/esp32s3-ble-macro-knob.git)
+
+
+Getting StartedPrerequisitesZephyr 
+SDK (v0.17.x+)west 
+Meta-tool
+ESP32-S3 Toolchain (xtensa-espressif_esp32s3_zephyr-elf)
+Build & Flash
+Clone repository:Bash git clone [https://github.com/Biruk-aki/esp32s3-ble-macro-knob.git](https://github.com/Biruk-aki/esp32s3-ble-macro-knob.git)
 cd esp32s3-ble-macro-knob
-Perform a pristine build:Bashwest build -p always -b esp32s3_devkitc/esp32s3/procpu .
-Flash to ESP32-S3:Bashwest flash
-Pair with Host:Open host Bluetooth settings and pair with ESP32-DeskKnob.The device will establish BLE Security Level 2 bonding and register natively as a composite input device.AuthorBiruk AmbayeGitHub: @Biruk-aki
+Perform a pristine build:
+Bash west build -p always -b esp32s3_devkitc/esp32s3/procpu .
+Flash to ESP32-S3: Bash west flash
+Pair with Host:Open host Bluetooth settings and pair with ESP32-DeskKnob.
+The device will establish BLE Security Level 2 bonding and register natively as a composite input device.
+
+Author: Biruk Ambaye
+GitHub: @Biruk-aki
