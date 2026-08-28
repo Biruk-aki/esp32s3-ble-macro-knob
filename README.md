@@ -1,4 +1,4 @@
-Markdown# BLE Multi-Mode Desk Controller (ESP32-S3 HOGP Macro Knob)
+BLE Multi-Mode Desk Controller (ESP32-S3 HOGP Macro Knob)
 
 A wireless, driverless desktop macro controller built on the **ESP32-S3** using **Zephyr RTOS**. The device interfaces natively with host operating systems (Windows, macOS, Linux) over **Bluetooth Low Energy (BLE) HID over GATT Profile (HOGP)** to provide physical volume adjustments, document scrolling, display brightness control, and media management without requiring host-side companion software.
 
